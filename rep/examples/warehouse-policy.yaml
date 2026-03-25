@@ -1,0 +1,307 @@
+# Antihero Warehouse Robot Safety Policy
+# For autonomous mobile robots (AMRs) and robotic arms in warehouse environments
+# Compliant with: ISO 10218-1/2, ISO 3691-4 (industrial trucks)
+# Priority: Human safety > Equipment protection > Operational efficiency
+
+version: "1.0"
+tier: org
+name: "Warehouse Robot Safety"
+description: >
+  Behavioral safety policy for warehouse robots operating in mixed
+  human-robot environments. Enforces zone-based motion restrictions,
+  ISO-compliant force and speed limits, payload constraints, and
+  role-based access to power systems. Designed for facilities with
+  designated zones (open, pedestrian, restricted) and shift-based
+  human traffic patterns.
+
+rules:
+  # ============================================================
+  # EMERGENCY — always permitted, highest priority
+  # ============================================================
+
+  - id: warehouse-allow-emergency-stop
+    description: "Emergency stop is always allowed regardless of state"
+    effect: allow
+    priority: 200
+    actions: ["power.emergency_stop"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  # ============================================================
+  # ZONE RESTRICTIONS — deny motion in restricted zones
+  # ============================================================
+
+  - id: warehouse-deny-restricted-zone
+    description: "Block all motion in restricted zones (charging, maintenance, fire exits)"
+    effect: deny
+    priority: 190
+    actions: ["motion.*"]
+    resources:
+      - "zone:restricted-*"
+      - "zone:charging-bay"
+      - "zone:maintenance-area"
+      - "zone:fire-exit-*"
+      - "zone:electrical-room"
+    risk_score: 0.9
+
+  - id: warehouse-deny-motion-outside-facility
+    description: "Block motion commands targeting coordinates outside facility bounds"
+    effect: deny
+    priority: 190
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["*"]
+    conditions:
+      - field: "context.within_facility_bounds"
+        operator: neq
+        value: true
+    risk_score: 1.0
+
+  # ============================================================
+  # SPEED LIMITS — velocity caps based on zone and human proximity
+  # ============================================================
+
+  - id: warehouse-speed-near-humans
+    description: "Limit speed to 0.5 m/s when humans detected within 3m"
+    effect: deny
+    priority: 180
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["*"]
+    conditions:
+      - field: "context.nearest_human_distance_m"
+        operator: lt
+        value: 3.0
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.5
+    risk_score: 0.8
+
+  - id: warehouse-speed-pedestrian-zone
+    description: "Limit speed to 0.8 m/s in pedestrian zones regardless of detection"
+    effect: deny
+    priority: 170
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources:
+      - "zone:pedestrian-*"
+      - "zone:break-room-corridor"
+      - "zone:office-adjacent"
+      - "zone:loading-dock-walkway"
+    conditions:
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.8
+    risk_score: 0.7
+
+  - id: warehouse-speed-open-areas
+    description: "Limit speed to 1.5 m/s in open warehouse aisles"
+    effect: deny
+    priority: 160
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["zone:aisle-*", "zone:open-*", "zone:staging-*"]
+    conditions:
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 1.5
+    risk_score: 0.5
+
+  # ============================================================
+  # FORCE LIMITS — ISO 10218 compliant
+  # ============================================================
+
+  - id: warehouse-deny-excessive-contact-force
+    description: "Block any action applying more than 50N contact force (ISO 10218 general limit)"
+    effect: deny
+    priority: 180
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["*"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 50.0
+    risk_score: 0.9
+
+  - id: warehouse-deny-excessive-grip-force
+    description: "Block grip force exceeding 80N to prevent product damage"
+    effect: deny
+    priority: 170
+    actions: ["force.grip"]
+    resources: ["*"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 80.0
+    risk_score: 0.7
+
+  # ============================================================
+  # PAYLOAD LIMITS — weight-based constraints
+  # ============================================================
+
+  - id: warehouse-deny-overweight-payload
+    description: "Block picking objects exceeding 25kg maximum payload"
+    effect: deny
+    priority: 170
+    actions: ["environment.pick", "force.grip"]
+    resources: ["*"]
+    conditions:
+      - field: "parameters.payload_kg"
+        operator: gt
+        value: 25.0
+    risk_score: 0.85
+
+  - id: warehouse-gate-heavy-lift
+    description: "Require simulation before lifting objects over 10kg"
+    effect: allow_with_requirements
+    priority: 100
+    actions: ["environment.pick", "force.grip"]
+    resources: ["*"]
+    conditions:
+      - field: "parameters.payload_kg"
+        operator: gt
+        value: 10.0
+    requirements:
+      - kind: simulate
+        params:
+          simulator: "moveit_planning_scene"
+          timeout_seconds: 10
+          check_collisions: true
+          check_force_limits: true
+      - kind: log
+        params:
+          level: info
+          message: "Heavy lift simulation completed"
+    risk_score: 0.5
+
+  # ============================================================
+  # POWER OPERATIONS — role-restricted
+  # ============================================================
+
+  - id: warehouse-deny-power-non-maintenance
+    description: "Deny power operations to non-maintenance roles"
+    effect: deny
+    priority: 150
+    subjects: ["role:operator", "role:picker", "role:viewer", "role:planner"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    risk_score: 0.8
+
+  - id: warehouse-gate-power-maintenance
+    description: "Allow maintenance roles to manage power with MFA"
+    effect: allow_with_requirements
+    priority: 140
+    subjects: ["role:maintenance", "role:admin"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    requirements:
+      - kind: mfa
+        params:
+          method: "totp"
+          required_role: "role:maintenance"
+      - kind: log
+        params:
+          level: warning
+          message: "Power system operation by maintenance personnel"
+    risk_score: 0.6
+
+  # ============================================================
+  # TOOL CHANGES — require confirmation
+  # ============================================================
+
+  - id: warehouse-gate-tool-change
+    description: "Require operator confirmation for end effector changes"
+    effect: allow_with_requirements
+    priority: 100
+    actions: ["tool.change", "tool.calibrate"]
+    resources: ["*"]
+    requirements:
+      - kind: confirm
+        params:
+          message: "Confirm: robot will change end effector. Ensure clear workspace."
+          timeout_seconds: 30
+      - kind: simulate
+        params:
+          simulator: "moveit_planning_scene"
+          timeout_seconds: 5
+          check_collisions: true
+          check_force_limits: false
+    risk_score: 0.4
+
+  # ============================================================
+  # PERCEPTION — freely allowed with logging
+  # ============================================================
+
+  - id: warehouse-allow-perception
+    description: "Allow all perception actions (scan, detect, image capture)"
+    effect: allow_with_requirements
+    priority: 50
+    actions: ["perception.*"]
+    resources: ["*"]
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Perception action executed"
+    risk_score: 0.1
+
+  # ============================================================
+  # COMMUNICATION — rate limited
+  # ============================================================
+
+  - id: warehouse-rate-limit-external-comms
+    description: "Rate limit external communications to prevent flooding"
+    effect: allow_with_requirements
+    priority: 50
+    actions: ["communication.send", "communication.broadcast", "communication.report"]
+    resources: ["*"]
+    requirements:
+      - kind: rate_limit
+        params:
+          max_count: 30
+          window_seconds: 60
+      - kind: log
+        params:
+          level: info
+          message: "External communication sent"
+    risk_score: 0.2
+
+  - id: warehouse-allow-alerts
+    description: "Allow alert and human-assistance calls without rate limit"
+    effect: allow
+    priority: 60
+    actions: ["communication.alert", "communication.call_human"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  # ============================================================
+  # ALLOWED MOTION — designated zones with logging
+  # ============================================================
+
+  - id: warehouse-allow-designated-motion
+    description: "Allow motion within designated operational zones"
+    effect: allow_with_requirements
+    priority: 40
+    actions: ["motion.*"]
+    resources:
+      - "zone:aisle-*"
+      - "zone:open-*"
+      - "zone:staging-*"
+      - "zone:loading-dock"
+      - "zone:packing-*"
+      - "zone:receiving-*"
+      - "zone:pedestrian-*"
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Motion in designated zone"
+    risk_score: 0.2
+
+  # ============================================================
+  # DEFAULT — fail-closed
+  # ============================================================
+
+  - id: warehouse-default-deny
+    description: "Deny all unmatched actions (fail-closed)"
+    effect: deny
+    priority: -1000
+    actions: ["*"]
+    resources: ["*"]
+    risk_score: 0.0

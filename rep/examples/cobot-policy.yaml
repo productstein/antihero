@@ -1,0 +1,484 @@
+# Antihero Collaborative Robot (Cobot) Safety Policy
+# ISO/TS 15066:2016 compliant — collaborative operation requirements
+# Modes: Hand guiding, speed and separation monitoring, power and force limiting
+# Priority: Human injury prevention > ISO compliance > Task completion
+
+version: "1.0"
+tier: org
+name: "Collaborative Robot ISO/TS 15066"
+description: >
+  Behavioral safety policy for collaborative robots sharing workspace with
+  human operators. Implements ISO/TS 15066 requirements including speed and
+  separation monitoring, power and force limiting per Table A.2 body region
+  limits, hand-guided operation constraints, and mandatory human presence
+  verification. Designed for manufacturing cells, assembly lines, and
+  shared workstations.
+
+rules:
+  # ============================================================
+  # EMERGENCY — unconditional, highest priority
+  # ============================================================
+
+  - id: cobot-allow-emergency-stop
+    description: "Emergency stop is always allowed, no conditions"
+    effect: allow
+    priority: 200
+    actions: ["power.emergency_stop"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  - id: cobot-allow-commanded-stop
+    description: "Commanded stop is always allowed for graceful deceleration"
+    effect: allow
+    priority: 200
+    actions: ["motion.stop"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  # ============================================================
+  # HUMAN PRESENCE — deny autonomous operation without humans
+  # ============================================================
+
+  - id: cobot-deny-no-human-presence
+    description: "Deny all motion and force actions when no human operator detected"
+    effect: deny
+    priority: 190
+    actions: ["motion.*", "force.*", "environment.*", "tool.*"]
+    resources: ["*"]
+    conditions:
+      - field: "context.human_presence_confirmed"
+        operator: neq
+        value: true
+    risk_score: 1.0
+
+  - id: cobot-deny-no-safety-scanner
+    description: "Deny operation when safety scanner system is offline"
+    effect: deny
+    priority: 195
+    actions: ["motion.*", "force.*"]
+    resources: ["*"]
+    conditions:
+      - field: "context.safety_scanner_active"
+        operator: neq
+        value: true
+    risk_score: 1.0
+
+  # ============================================================
+  # SPEED AND SEPARATION MONITORING (ISO/TS 15066 Section 5.5.3)
+  # ============================================================
+
+  # ISO/TS 15066 specifies that the robot must maintain a protective
+  # separation distance. Speed must decrease as separation decreases.
+
+  - id: cobot-deny-speed-zone-1
+    description: "Full stop when human within 0.5m (protective stop zone)"
+    effect: deny
+    priority: 185
+    actions: ["motion.move", "motion.move_joint", "motion.move_cartesian", "motion.follow_path", "motion.jog"]
+    resources: ["*"]
+    conditions:
+      - field: "context.nearest_human_distance_m"
+        operator: lt
+        value: 0.5
+    risk_score: 0.95
+
+  - id: cobot-deny-speed-zone-2
+    description: "Limit to 0.1 m/s when human within 1.0m (reduced speed zone)"
+    effect: deny
+    priority: 183
+    actions: ["motion.move", "motion.move_joint", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["*"]
+    conditions:
+      - field: "context.nearest_human_distance_m"
+        operator: lt
+        value: 1.0
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.1
+    risk_score: 0.8
+
+  - id: cobot-deny-speed-zone-3
+    description: "Limit to 0.25 m/s when human within 2.0m (monitoring zone)"
+    effect: deny
+    priority: 181
+    actions: ["motion.move", "motion.move_joint", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["*"]
+    conditions:
+      - field: "context.nearest_human_distance_m"
+        operator: lt
+        value: 2.0
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.25
+    risk_score: 0.6
+
+  - id: cobot-deny-speed-max
+    description: "Maximum speed 0.5 m/s in collaborative workspace (ISO/TS 15066 general limit)"
+    effect: deny
+    priority: 175
+    actions: ["motion.move", "motion.move_joint", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["zone:collaborative-*", "zone:shared-*"]
+    conditions:
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.5
+    risk_score: 0.7
+
+  # ============================================================
+  # POWER AND FORCE LIMITING (ISO/TS 15066 Table A.2)
+  # ============================================================
+
+  # Quasi-static contact force limits by body region (N).
+  # These are the maximum permissible forces for transient contact.
+
+  # Skull and forehead: 130N
+  - id: cobot-deny-force-head
+    description: "Force limit for head/skull contact: 130N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:head", "body_region:skull", "body_region:forehead"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 130.0
+    risk_score: 0.95
+
+  # Face: 65N
+  - id: cobot-deny-force-face
+    description: "Force limit for face contact: 65N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:face"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 65.0
+    risk_score: 0.95
+
+  # Neck: 150N
+  - id: cobot-deny-force-neck
+    description: "Force limit for neck contact: 150N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:neck", "body_region:throat"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 150.0
+    risk_score: 0.95
+
+  # Back and shoulders: 210N
+  - id: cobot-deny-force-back-shoulders
+    description: "Force limit for back/shoulders: 210N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:back", "body_region:shoulder", "body_region:shoulders"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 210.0
+    risk_score: 0.85
+
+  # Chest: 140N
+  - id: cobot-deny-force-chest
+    description: "Force limit for chest contact: 140N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:chest", "body_region:sternum"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 140.0
+    risk_score: 0.9
+
+  # Abdomen: 110N
+  - id: cobot-deny-force-abdomen
+    description: "Force limit for abdomen contact: 110N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:abdomen", "body_region:pelvis"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 110.0
+    risk_score: 0.9
+
+  # Upper arms and elbow: 150N
+  - id: cobot-deny-force-upper-arm
+    description: "Force limit for upper arm/elbow: 150N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:upper_arm", "body_region:elbow"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 150.0
+    risk_score: 0.85
+
+  # Lower arms and wrist: 160N
+  - id: cobot-deny-force-lower-arm
+    description: "Force limit for forearm/wrist: 160N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:forearm", "body_region:lower_arm", "body_region:wrist"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 160.0
+    risk_score: 0.85
+
+  # Hands and fingers: 140N
+  - id: cobot-deny-force-hands
+    description: "Force limit for hand/finger contact: 140N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:hand", "body_region:finger", "body_region:palm"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 140.0
+    risk_score: 0.85
+
+  # Thighs and knees: 220N
+  - id: cobot-deny-force-thigh
+    description: "Force limit for thigh/knee: 220N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:thigh", "body_region:knee"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 220.0
+    risk_score: 0.85
+
+  # Lower legs: 130N
+  - id: cobot-deny-force-lower-leg
+    description: "Force limit for lower leg/shin: 130N (ISO/TS 15066 Table A.2)"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:shin", "body_region:lower_leg", "body_region:calf"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 130.0
+    risk_score: 0.85
+
+  # General fallback: if body region not specified, use most conservative limit (65N face)
+  - id: cobot-deny-force-unknown-region
+    description: "Conservative force limit for unspecified body region: 65N"
+    effect: deny
+    priority: 184
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources: ["body_region:unknown", "body_region:*"]
+    conditions:
+      - field: "parameters.force_n"
+        operator: gt
+        value: 65.0
+      - field: "context.body_region_identified"
+        operator: neq
+        value: true
+    risk_score: 0.95
+
+  # ============================================================
+  # HAND-GUIDED MODE (ISO/TS 15066 Section 5.5.2)
+  # ============================================================
+
+  - id: cobot-allow-hand-guided
+    description: "Allow hand-guided motion when enable device is active"
+    effect: allow_with_requirements
+    priority: 100
+    actions: ["motion.jog", "motion.move_joint", "motion.move_cartesian"]
+    resources: ["*"]
+    conditions:
+      - field: "context.operation_mode"
+        operator: eq
+        value: "hand_guided"
+      - field: "context.enable_device_active"
+        operator: eq
+        value: true
+    requirements:
+      - kind: human_proof
+        params:
+          method: "enable_device"
+          description: "Operator must hold enabling device during hand-guided motion"
+          min_confidence: 0.99
+      - kind: log
+        params:
+          level: info
+          message: "Hand-guided motion active"
+    risk_score: 0.3
+
+  - id: cobot-deny-hand-guided-no-enable
+    description: "Deny hand-guided motion if enabling device not active"
+    effect: deny
+    priority: 150
+    actions: ["motion.*"]
+    resources: ["*"]
+    conditions:
+      - field: "context.operation_mode"
+        operator: eq
+        value: "hand_guided"
+      - field: "context.enable_device_active"
+        operator: neq
+        value: true
+    risk_score: 0.9
+
+  # ============================================================
+  # TOOL CHANGES — require human confirmation
+  # ============================================================
+
+  - id: cobot-gate-tool-change
+    description: "Require operator confirmation for any tool or end effector change"
+    effect: allow_with_requirements
+    priority: 120
+    actions: ["tool.change"]
+    resources: ["*"]
+    requirements:
+      - kind: confirm
+        params:
+          message: "Confirm: cobot will change tool. Verify workspace is clear and tool is correctly seated."
+          timeout_seconds: 60
+          required_role: "role:operator"
+      - kind: simulate
+        params:
+          simulator: "moveit_planning_scene"
+          timeout_seconds: 15
+          check_collisions: true
+          check_force_limits: true
+      - kind: log
+        params:
+          level: warning
+          message: "Tool change initiated with operator confirmation"
+    risk_score: 0.4
+
+  - id: cobot-gate-tool-activate
+    description: "Require confirmation before activating powered tools"
+    effect: allow_with_requirements
+    priority: 110
+    actions: ["tool.activate"]
+    resources: ["*"]
+    requirements:
+      - kind: confirm
+        params:
+          message: "Confirm: cobot will activate tool. Ensure safe distance."
+          timeout_seconds: 30
+      - kind: human_proof
+        params:
+          method: "safety_scanner"
+          zone: "collaborative_workspace"
+          min_confidence: 0.95
+    risk_score: 0.5
+
+  # ============================================================
+  # PERCEPTION — freely allowed
+  # ============================================================
+
+  - id: cobot-allow-perception
+    description: "Allow all perception for safety monitoring and task execution"
+    effect: allow
+    priority: 50
+    actions: ["perception.*"]
+    resources: ["*"]
+    risk_score: 0.05
+
+  # ============================================================
+  # COMMUNICATION — allowed with logging
+  # ============================================================
+
+  - id: cobot-allow-alerts
+    description: "Allow safety alerts and human assistance requests"
+    effect: allow
+    priority: 60
+    actions: ["communication.alert", "communication.call_human"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  - id: cobot-gate-communication
+    description: "Log all outbound communications"
+    effect: allow_with_requirements
+    priority: 40
+    actions: ["communication.*"]
+    resources: ["*"]
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Cobot external communication"
+    risk_score: 0.1
+
+  # ============================================================
+  # STANDARD MOTION — allowed in collaborative workspace with monitoring
+  # ============================================================
+
+  - id: cobot-allow-collaborative-motion
+    description: "Allow motion in collaborative workspace with human presence verified"
+    effect: allow_with_requirements
+    priority: 30
+    actions: ["motion.*"]
+    resources: ["zone:collaborative-*", "zone:shared-*", "zone:cell-*"]
+    conditions:
+      - field: "context.human_presence_confirmed"
+        operator: eq
+        value: true
+      - field: "context.safety_scanner_active"
+        operator: eq
+        value: true
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Collaborative motion executed"
+    risk_score: 0.2
+
+  # ============================================================
+  # POWER — restricted to maintenance
+  # ============================================================
+
+  - id: cobot-deny-power-non-authorized
+    description: "Deny power control to non-maintenance, non-admin roles"
+    effect: deny
+    priority: 150
+    subjects: ["role:operator", "role:viewer"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    risk_score: 0.8
+
+  - id: cobot-gate-power-maintenance
+    description: "Gate power operations behind MFA for authorized roles"
+    effect: allow_with_requirements
+    priority: 140
+    subjects: ["role:maintenance", "role:admin", "role:integrator"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    requirements:
+      - kind: mfa
+        params:
+          method: "totp"
+      - kind: log
+        params:
+          level: warning
+          message: "Power system operation by authorized personnel"
+    risk_score: 0.6
+
+  # ============================================================
+  # DEFAULT — fail-closed
+  # ============================================================
+
+  - id: cobot-default-deny
+    description: "Deny all unmatched actions (fail-closed per ISO/TS 15066)"
+    effect: deny
+    priority: -1000
+    actions: ["*"]
+    resources: ["*"]
+    risk_score: 0.0

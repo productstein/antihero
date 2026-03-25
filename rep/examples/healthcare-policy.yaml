@@ -1,0 +1,467 @@
+# Antihero Hospital Robot Safety Policy
+# For autonomous mobile robots in clinical environments (delivery, logistics, telepresence)
+# Compliant with: ISO 10218, HIPAA (45 CFR Parts 160/164), Joint Commission standards
+# Priority: Patient safety > Privacy > Infection control > Operational efficiency
+
+version: "1.0"
+tier: org
+name: "Hospital Robot Safety"
+description: >
+  Behavioral safety policy for robots operating in hospital and clinical
+  environments. Covers patient privacy (HIPAA-aligned recording restrictions),
+  medication handling (pharmacist approval chain), infection control (sterile
+  zone access), speed limits in clinical corridors, force restrictions near
+  patients, and communication with nursing stations. Designed for delivery
+  robots, logistics AGVs, telepresence robots, and assistive care robots.
+
+rules:
+  # ============================================================
+  # EMERGENCY — always permitted
+  # ============================================================
+
+  - id: hospital-allow-emergency-stop
+    description: "Emergency stop always allowed"
+    effect: allow
+    priority: 200
+    actions: ["power.emergency_stop"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  - id: hospital-allow-emergency-alert
+    description: "Emergency alerts and code calls always allowed"
+    effect: allow
+    priority: 200
+    actions: ["communication.alert", "communication.call_human"]
+    resources: ["*"]
+    risk_score: 0.0
+
+  # ============================================================
+  # PATIENT PRIVACY — HIPAA-aligned recording restrictions
+  # ============================================================
+
+  - id: hospital-deny-recording-patient-rooms
+    description: "Deny video/audio recording in patient rooms without consent"
+    effect: deny
+    priority: 190
+    actions: ["perception.capture_video", "perception.record_audio", "perception.capture_image"]
+    resources:
+      - "zone:patient-room-*"
+      - "zone:exam-room-*"
+      - "zone:consultation-*"
+      - "zone:therapy-room-*"
+      - "zone:psych-ward-*"
+    conditions:
+      - field: "context.patient_recording_consent"
+        operator: neq
+        value: true
+    risk_score: 1.0
+
+  - id: hospital-deny-identify-patients
+    description: "Deny facial recognition or patient identification without clinical need"
+    effect: deny
+    priority: 190
+    actions: ["perception.identify"]
+    resources:
+      - "zone:patient-room-*"
+      - "zone:waiting-*"
+      - "zone:exam-room-*"
+    conditions:
+      - field: "context.clinical_identification_required"
+        operator: neq
+        value: true
+    risk_score: 0.95
+
+  - id: hospital-deny-phi-broadcast
+    description: "Deny broadcasting any message containing patient identifiers"
+    effect: deny
+    priority: 190
+    actions: ["communication.broadcast"]
+    resources: ["*"]
+    conditions:
+      - field: "parameters.message"
+        operator: matches
+        value: ".*\\b(patient|MRN|DOB|diagnosis|room\\s+\\d+|bed\\s+\\d+)\\b.*"
+    risk_score: 1.0
+
+  # ============================================================
+  # FORCE APPLICATION — absolute prohibition near patients
+  # ============================================================
+
+  - id: hospital-deny-force-on-patients
+    description: "Deny any force application on or toward patients"
+    effect: deny
+    priority: 195
+    actions: ["force.apply", "force.push", "force.contact", "force.grip", "force.torque"]
+    resources:
+      - "target:patient"
+      - "target:person-in-bed"
+      - "target:person-in-wheelchair"
+      - "body_region:*"
+    risk_score: 1.0
+
+  - id: hospital-deny-force-patient-zones
+    description: "Deny force actions in patient care areas"
+    effect: deny
+    priority: 185
+    actions: ["force.apply", "force.push", "force.contact"]
+    resources:
+      - "zone:patient-room-*"
+      - "zone:icu-*"
+      - "zone:nicu-*"
+      - "zone:exam-room-*"
+      - "zone:recovery-*"
+    risk_score: 0.95
+
+  # ============================================================
+  # MEDICATION HANDLING — pharmacist approval chain
+  # ============================================================
+
+  - id: hospital-gate-medication-pickup
+    description: "Require pharmacist approval before picking up medications"
+    effect: allow_with_requirements
+    priority: 150
+    actions: ["environment.pick"]
+    resources:
+      - "item:medication-*"
+      - "item:prescription-*"
+      - "item:controlled-substance-*"
+      - "item:iv-bag-*"
+      - "item:blood-product-*"
+    requirements:
+      - kind: confirm
+        params:
+          message: "Pharmacist approval required: confirm medication pickup authorization"
+          timeout_seconds: 120
+          required_role: "role:pharmacist"
+      - kind: log
+        params:
+          level: warning
+          message: "Medication pickup — pharmacist-approved chain of custody initiated"
+    risk_score: 0.7
+
+  - id: hospital-gate-medication-delivery
+    description: "Require nursing confirmation for medication delivery to patient"
+    effect: allow_with_requirements
+    priority: 150
+    actions: ["environment.place"]
+    resources:
+      - "item:medication-*"
+      - "item:prescription-*"
+      - "item:controlled-substance-*"
+      - "item:iv-bag-*"
+      - "item:blood-product-*"
+    requirements:
+      - kind: confirm
+        params:
+          message: "Nurse verification required: confirm patient ID and medication match"
+          timeout_seconds: 120
+          required_role: "role:nurse"
+      - kind: log
+        params:
+          level: warning
+          message: "Medication delivered — nursing verification recorded"
+    risk_score: 0.7
+
+  - id: hospital-deny-controlled-substance-unescorted
+    description: "Deny transporting controlled substances without escort tracking"
+    effect: deny
+    priority: 160
+    actions: ["motion.*"]
+    resources: ["*"]
+    conditions:
+      - field: "context.carrying_controlled_substance"
+        operator: eq
+        value: true
+      - field: "context.escort_tracking_active"
+        operator: neq
+        value: true
+    risk_score: 0.9
+
+  # ============================================================
+  # INFECTION CONTROL — sterile zone restrictions
+  # ============================================================
+
+  - id: hospital-deny-sterile-no-decontam
+    description: "Deny entering sterile areas without completed decontamination cycle"
+    effect: deny
+    priority: 180
+    actions: ["motion.*"]
+    resources:
+      - "zone:operating-room-*"
+      - "zone:sterile-supply"
+      - "zone:clean-room-*"
+      - "zone:compounding-pharmacy"
+      - "zone:transplant-*"
+      - "zone:burn-unit-*"
+    conditions:
+      - field: "context.decontamination_completed"
+        operator: neq
+        value: true
+    risk_score: 0.95
+
+  - id: hospital-deny-sterile-after-contaminated
+    description: "Deny entering sterile zones after visiting contaminated areas without re-decontamination"
+    effect: deny
+    priority: 180
+    actions: ["motion.*"]
+    resources:
+      - "zone:operating-room-*"
+      - "zone:sterile-supply"
+      - "zone:clean-room-*"
+    conditions:
+      - field: "context.visited_contaminated_zone"
+        operator: eq
+        value: true
+      - field: "context.re_decontamination_completed"
+        operator: neq
+        value: true
+    risk_score: 0.95
+
+  - id: hospital-gate-isolation-rooms
+    description: "Require infection control clearance for isolation room entry"
+    effect: allow_with_requirements
+    priority: 160
+    actions: ["motion.*"]
+    resources:
+      - "zone:isolation-*"
+      - "zone:quarantine-*"
+      - "zone:airborne-precaution-*"
+    requirements:
+      - kind: confirm
+        params:
+          message: "Infection control: confirm authorization to enter isolation zone"
+          timeout_seconds: 60
+          required_role: "role:infection_control"
+      - kind: log
+        params:
+          level: warning
+          message: "Robot entering isolation zone — infection control approved"
+    risk_score: 0.6
+
+  # ============================================================
+  # SPEED LIMITS — hospital corridor safety
+  # ============================================================
+
+  - id: hospital-deny-speed-patient-areas
+    description: "Limit speed to 0.3 m/s in patient care areas"
+    effect: deny
+    priority: 170
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources:
+      - "zone:patient-room-*"
+      - "zone:icu-*"
+      - "zone:nicu-*"
+      - "zone:recovery-*"
+    conditions:
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.3
+    risk_score: 0.8
+
+  - id: hospital-deny-speed-corridors
+    description: "Limit speed to 0.8 m/s in hospital corridors"
+    effect: deny
+    priority: 160
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources:
+      - "zone:corridor-*"
+      - "zone:hallway-*"
+      - "zone:lobby"
+      - "zone:elevator-*"
+    conditions:
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.8
+    risk_score: 0.6
+
+  - id: hospital-deny-speed-near-humans
+    description: "Limit speed to 0.3 m/s when any person detected within 2m"
+    effect: deny
+    priority: 175
+    actions: ["motion.move", "motion.move_cartesian", "motion.follow_path"]
+    resources: ["*"]
+    conditions:
+      - field: "context.nearest_human_distance_m"
+        operator: lt
+        value: 2.0
+      - field: "parameters.velocity_m_s"
+        operator: gt
+        value: 0.3
+    risk_score: 0.75
+
+  # ============================================================
+  # RESTRICTED ZONES — areas robots must never enter
+  # ============================================================
+
+  - id: hospital-deny-restricted-zones
+    description: "Deny entry to restricted clinical zones"
+    effect: deny
+    priority: 185
+    actions: ["motion.*"]
+    resources:
+      - "zone:mri-room-*"
+      - "zone:radiation-*"
+      - "zone:xray-active-*"
+      - "zone:nuclear-medicine"
+      - "zone:linear-accelerator"
+    risk_score: 0.95
+
+  # ============================================================
+  # COMMUNICATION — nursing station and clinical systems
+  # ============================================================
+
+  - id: hospital-allow-nursing-comms
+    description: "Allow communication with nursing stations and clinical systems"
+    effect: allow_with_requirements
+    priority: 60
+    actions: ["communication.send", "communication.report"]
+    resources:
+      - "system:nursing-station-*"
+      - "system:nurse-call"
+      - "system:adt"
+      - "system:pharmacy"
+      - "system:materials-management"
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Clinical system communication"
+    risk_score: 0.1
+
+  - id: hospital-rate-limit-external-comms
+    description: "Rate limit non-clinical external communications"
+    effect: allow_with_requirements
+    priority: 40
+    actions: ["communication.send", "communication.broadcast", "communication.report"]
+    resources: ["*"]
+    requirements:
+      - kind: rate_limit
+        params:
+          max_count: 20
+          window_seconds: 60
+      - kind: log
+        params:
+          level: info
+          message: "External communication from hospital robot"
+    risk_score: 0.2
+
+  # ============================================================
+  # PERCEPTION — allowed with privacy safeguards
+  # ============================================================
+
+  - id: hospital-allow-navigation-perception
+    description: "Allow LIDAR and depth scanning for navigation"
+    effect: allow
+    priority: 50
+    actions: ["perception.scan", "perception.detect_human"]
+    resources: ["*"]
+    risk_score: 0.05
+
+  - id: hospital-gate-imaging-public-areas
+    description: "Allow imaging in non-patient areas with logging"
+    effect: allow_with_requirements
+    priority: 40
+    actions: ["perception.capture_image", "perception.capture_video"]
+    resources:
+      - "zone:corridor-*"
+      - "zone:lobby"
+      - "zone:loading-dock"
+      - "zone:service-*"
+      - "zone:storage-*"
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Image capture in non-patient area"
+    risk_score: 0.2
+
+  # ============================================================
+  # GENERAL MOTION — allowed in service areas
+  # ============================================================
+
+  - id: hospital-allow-service-motion
+    description: "Allow motion in service corridors and non-clinical zones"
+    effect: allow_with_requirements
+    priority: 30
+    actions: ["motion.*"]
+    resources:
+      - "zone:corridor-*"
+      - "zone:hallway-*"
+      - "zone:elevator-*"
+      - "zone:lobby"
+      - "zone:loading-dock"
+      - "zone:service-*"
+      - "zone:storage-*"
+      - "zone:materials-*"
+      - "zone:cafeteria"
+    requirements:
+      - kind: log
+        params:
+          level: info
+          message: "Hospital robot motion in service area"
+    risk_score: 0.15
+
+  - id: hospital-gate-patient-area-motion
+    description: "Allow motion in patient areas with human presence and logging"
+    effect: allow_with_requirements
+    priority: 25
+    actions: ["motion.*"]
+    resources:
+      - "zone:patient-room-*"
+      - "zone:icu-*"
+      - "zone:recovery-*"
+      - "zone:exam-room-*"
+    requirements:
+      - kind: human_proof
+        params:
+          method: "safety_scanner"
+          zone: "patient_area"
+          min_confidence: 0.95
+      - kind: log
+        params:
+          level: info
+          message: "Robot entering patient care area"
+    risk_score: 0.3
+
+  # ============================================================
+  # POWER — restricted to biomedical engineering
+  # ============================================================
+
+  - id: hospital-deny-power-non-biomed
+    description: "Deny power operations to non-biomedical engineering roles"
+    effect: deny
+    priority: 150
+    subjects: ["role:nurse", "role:operator", "role:viewer", "role:pharmacist"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    risk_score: 0.8
+
+  - id: hospital-gate-power-biomed
+    description: "Gate power operations for biomedical engineering with MFA"
+    effect: allow_with_requirements
+    priority: 140
+    subjects: ["role:biomed_engineer", "role:admin"]
+    actions: ["power.enable_drives", "power.disable_drives", "power.reset_estop", "power.shutdown", "power.reboot"]
+    resources: ["*"]
+    requirements:
+      - kind: mfa
+        params:
+          method: "totp"
+          required_role: "role:biomed_engineer"
+      - kind: log
+        params:
+          level: warning
+          message: "Power system operation — biomedical engineering"
+    risk_score: 0.6
+
+  # ============================================================
+  # DEFAULT — fail-closed
+  # ============================================================
+
+  - id: hospital-default-deny
+    description: "Deny all unmatched actions (fail-closed for clinical safety)"
+    effect: deny
+    priority: -1000
+    actions: ["*"]
+    resources: ["*"]
+    risk_score: 0.0
