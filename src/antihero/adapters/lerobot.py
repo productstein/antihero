@@ -164,14 +164,21 @@ def _build_context(action: Any, observation: Any) -> dict[str, Any]:
     """Build context dict from action and observation for policy conditions."""
     context: dict[str, Any] = {"caller_type": "lerobot"}
 
-    try:
-        import numpy as np
+    # Compute velocity stats from action output
+    if isinstance(action, (list, tuple)):
+        abs_vals = [abs(float(v)) for v in action]
+        if abs_vals:
+            context["max_joint_velocity"] = max(abs_vals)
+            context["mean_joint_velocity"] = sum(abs_vals) / len(abs_vals)
+    else:
+        try:
+            import numpy as np
 
-        if isinstance(action, np.ndarray):
-            context["max_joint_velocity"] = float(np.abs(action).max())
-            context["mean_joint_velocity"] = float(np.abs(action).mean())
-    except ImportError:
-        pass
+            if isinstance(action, np.ndarray):
+                context["max_joint_velocity"] = float(np.abs(action).max())
+                context["mean_joint_velocity"] = float(np.abs(action).mean())
+        except ImportError:
+            pass
 
     if isinstance(observation, dict):
         for key in ("force", "velocity", "position", "human_detected", "distance_to_human"):
